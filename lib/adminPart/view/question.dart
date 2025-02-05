@@ -1,4 +1,6 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:convert';
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -6,8 +8,7 @@ class AddQuestionScreen extends StatefulWidget {
   final String subjectName;
   final String mockName;
 
-  const AddQuestionScreen(
-      {super.key, required this.subjectName, required this.mockName});
+  AddQuestionScreen({required this.subjectName, required this.mockName});
 
   @override
   _AddQuestionScreenState createState() => _AddQuestionScreenState();
@@ -15,87 +16,100 @@ class AddQuestionScreen extends StatefulWidget {
 
 class _AddQuestionScreenState extends State<AddQuestionScreen> {
   final TextEditingController _questionController = TextEditingController();
-  final TextEditingController _explanationController =
-      TextEditingController(); // Explanation field
-  final List<TextEditingController> _optionControllers = List.generate(
-    4,
-    (_) => TextEditingController(),
-  );
+  final List<TextEditingController> _optionControllers =
+      List.generate(4, (index) => TextEditingController());
+  final TextEditingController _explanationController = TextEditingController();
   String? _correctAnswer;
   bool _isSaveEnabled = false;
 
-  // Add question to Firestore
-  Future<void> _addQuestion() async {
-    final questionText = _questionController.text.trim();
-    final explanationText = _explanationController.text.trim();
-    final options = _optionControllers
-        .map((controller) => controller.text.trim())
-        .where((option) => option.isNotEmpty)
-        .toList();
-    final correctAnswer = _correctAnswer?.trim();
+  // OpenAI API Key (Replace with your own secret key)
+  final String openAiApiKey = "sk-...uWAA";
 
-    if (questionText.isNotEmpty &&
-        options.length == _optionControllers.length &&
-        correctAnswer != null &&
-        options.contains(correctAnswer) &&
-        explanationText.isNotEmpty) {
-      try {
-        final questionsCollection = FirebaseFirestore.instance
-            .collection('series')
-            .doc(widget.subjectName)
-            .collection('mocks')
-            .doc(widget.mockName)
-            .collection('questions');
+  // Function to check form validity
+  void _checkFormValidity() {
+    setState(() {
+      _isSaveEnabled = _questionController.text.isNotEmpty &&
+          _optionControllers
+              .every((controller) => controller.text.isNotEmpty) &&
+          _correctAnswer != null &&
+          _explanationController.text.isNotEmpty;
+    });
+  }
 
-        // Create a new document to get the auto-generated ID
-        DocumentReference newQuestionRef = questionsCollection.doc();
+  // Function to call OpenAI API using Dio
+  Future<void> _generateQuestion() async {
+    setState(() {
+      _questionController.text = "Generating question...";
+      _explanationController.text = "Generating explanation...";
+      for (var controller in _optionControllers) {
+        controller.text = "Generating option...";
+      }
+    });
 
-        await newQuestionRef.set({
-          'key': newQuestionRef.id, // Store the auto-generated ID
-          'question': questionText,
-          'options': options,
-          'correctAnswer': correctAnswer,
-          'explanation': explanationText, // Store explanation
-        });
+    Dio dio = Dio();
 
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Question added successfully!')),
-        );
+    try {
+      final response = await dio.post(
+        "https://api.openai.com/v1/chat/completions",
+        options: Options(
+          headers: {
+            "Authorization": "Bearer $openAiApiKey",
+            "Content-Type": "application/json",
+          },
+        ),
+        data: jsonEncode({
+          "model": "gpt-3.5-turbo",
+          "messages": [
+            {
+              "role": "system",
+              "content":
+                  "You are an AI that generates multiple-choice questions."
+            },
+            {
+              "role": "user",
+              "content":
+                  "Generate a multiple-choice question with 4 options, the correct answer, and a brief explanation for ${widget.subjectName} - ${widget.mockName}."
+            }
+          ],
+          "max_tokens": 200,
+        }),
+      );
 
-        // Clear fields after successful submission
-        _questionController.clear();
-        _explanationController.clear();
-        for (var controller in _optionControllers) {
-          controller.clear();
-        }
+      if (response.statusCode == 200) {
+        final jsonResponse = response.data;
+        final generatedText = jsonResponse["choices"][0]["message"]["content"];
+
+        // Extract data (assuming JSON format from AI)
+        final extractedData = jsonDecode(generatedText);
 
         setState(() {
-          _correctAnswer = null;
-          _isSaveEnabled = false;
+          _questionController.text = extractedData["question"];
+          for (int i = 0; i < 4; i++) {
+            _optionControllers[i].text = extractedData["options"][i];
+          }
+          _correctAnswer = extractedData["correct_answer"];
+          _explanationController.text = extractedData["explanation"];
+          _checkFormValidity();
         });
-      } catch (e) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Failed to add question. Please try again!')),
-        );
+      } else {
+        throw Exception("Failed to fetch question");
       }
-    } else {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Please fill all fields correctly!')),
-      );
+    } catch (e) {
+      setState(() {
+        _questionController.text = "Error generating question";
+        _explanationController.text = "Error generating explanation";
+        for (var controller in _optionControllers) {
+          controller.text = "Error";
+        }
+      });
+      print("Error: $e");
     }
   }
 
-  // Check form validity
-  void _checkFormValidity() {
-    setState(() {
-      _isSaveEnabled = _questionController.text.trim().isNotEmpty &&
-          _optionControllers
-              .every((controller) => controller.text.trim().isNotEmpty) &&
-          _correctAnswer != null &&
-          _explanationController.text
-              .trim()
-              .isNotEmpty; // Check if explanation is filled
-    });
+  // Function to save the question
+  void _addQuestion() {
+    // Implement your save logic here
+    print("Question Saved: ${_questionController.text}");
   }
 
   @override
@@ -115,6 +129,15 @@ class _AddQuestionScreenState extends State<AddQuestionScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
+              // Generate AI Question Button
+              ElevatedButton(
+                onPressed: _generateQuestion,
+                style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+                child: Text('Generate AI Question'),
+              ),
+              SizedBox(height: 16),
+
+              // Question Input
               TextFormField(
                 controller: _questionController,
                 decoration: InputDecoration(
@@ -125,6 +148,8 @@ class _AddQuestionScreenState extends State<AddQuestionScreen> {
                 onChanged: (_) => _checkFormValidity(),
               ),
               SizedBox(height: 16),
+
+              // Options Input Fields
               for (int i = 0; i < 4; i++)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 8.0),
@@ -140,7 +165,10 @@ class _AddQuestionScreenState extends State<AddQuestionScreen> {
                     },
                   ),
                 ),
+
               SizedBox(height: 16),
+
+              // Dropdown for Correct Answer
               Container(
                 width: MediaQuery.of(context).size.width * 0.4,
                 child: DropdownButton<String>(
@@ -165,17 +193,23 @@ class _AddQuestionScreenState extends State<AddQuestionScreen> {
                       .toList(),
                 ),
               ),
+
               SizedBox(height: 16),
+
+              // Explanation Input
               TextFormField(
                 controller: _explanationController,
                 decoration: InputDecoration(
                   labelText: 'Enter explanation',
                   border: OutlineInputBorder(),
                 ),
-                maxLines: 3, // Allow multiline explanation
+                maxLines: 3,
                 onChanged: (_) => _checkFormValidity(),
               ),
+
               SizedBox(height: 20),
+
+              // Save Button
               SizedBox(
                 width: MediaQuery.of(context).size.width * 0.8,
                 child: ElevatedButton(
